@@ -1,4 +1,9 @@
+
 #!/bin/sh
+
+# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-FileCopyrightText: 2025 g-Projets
+
 # g-guest - router orchestrator (BSDRP in bhyve)
 # Commands:
 #   apply       # prepare disk from .img.xz and start VM

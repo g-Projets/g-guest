@@ -1,4 +1,9 @@
 #!/bin/sh
+
+# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-FileCopyrightText: 2025 g-Projets
+
+
 # g-guest - access helpers (PF NAT + Netgraph attach + SSH)
 # Usage (CLI):
 #   lib/access.sh up [--backend netgraph|vale] [--switch LOGICAL] [--host-if IF]

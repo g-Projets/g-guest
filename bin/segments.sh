@@ -1,4 +1,9 @@
 #!/bin/sh
+
+# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-FileCopyrightText: 2025 g-Projets
+
+
 # g-guest - segments manager (VALE & Netgraph)
 # Commands:
 #   ensure                   # ensure all switches from networks.yaml exist

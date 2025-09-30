@@ -1,4 +1,9 @@
 #!/bin/sh
+
+# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-FileCopyrightText: 2025 g-Projets
+
+
 # PROVIDE: g_guest_segments
 # REQUIRE: FILESYSTEMS NETWORKING netif
 # BEFORE:  LOGIN

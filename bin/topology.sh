@@ -1,4 +1,9 @@
 #!/bin/sh
+
+# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-FileCopyrightText: 2025 g-Projets
+
+
 # g-guest - Topology backup & restore (YAML) with SHA256 integrity
 # Usage:
 #   topology.sh backup [--out file.yaml]
