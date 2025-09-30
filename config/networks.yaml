@@ -1,0 +1,11 @@
+version: 1
+networks:
+  - name: mgmt
+    backend: netgraph
+    options:
+      autostart: true
+
+  - name: fabric
+    backend: vale
+    options:
+      autostart: false

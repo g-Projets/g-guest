@@ -1,0 +1,35 @@
+router:
+  name: bsdrp0
+  workdir: /var/vm/bsdrp0
+  image: /root/images/BSDRP-latest-amd64.img.xz
+
+  ram: 2G
+  cpus: 2
+  boot: uefi            # uefi|bios
+  console: nmdm
+  root_backend: virtio-blk
+  network_driver: virtio-net
+  nic_reserve_slots: 2
+
+  nics:
+    - id: mgmt0
+      backend: netgraph
+      switch: mgmt
+      mac: auto
+
+  disks: []
+
+  access:
+    backend: netgraph
+    switch: mgmt
+    host_if: lsd-mgmt0
+    host_ipv4: 10.0.69.1/24
+    host_ipv6: fd42::1/64
+    nat:
+      enable: true
+      wan_if: default
+      anchor: gguest_nat
+    ssh:
+      host: 10.0.69.2
+      user: admin
+      pubkey: /root/.ssh/id_ed25519.pub

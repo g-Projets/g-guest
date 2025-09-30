@@ -1,0 +1,30 @@
+#!/bin/sh
+# PROVIDE: g_guest_segments
+# REQUIRE: FILESYSTEMS NETWORKING netif
+# BEFORE:  LOGIN
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="g_guest_segments"
+rcvar="${name}_enable"
+
+load_rc_config $name
+
+: ${g_guest_segments_enable:="NO"}
+: ${g_guest_segments_basedir:="/usr/local/g-guest"}
+
+start_cmd="${name}_start"
+stop_cmd=":"
+
+g_guest_segments_start() {
+    SEG="${g_guest_segments_basedir}/bin/segments.sh"
+    if [ ! -x "$SEG" ]; then
+        echo "g_guest_segments: missing $SEG" >&2
+        return 1
+    }
+    echo "g_guest_segments: ensuring network segments..."
+    "$SEG" ensure
+}
+
+run_rc_command "$1"
