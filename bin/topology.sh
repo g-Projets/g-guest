@@ -1,8 +1,6 @@
 #!/bin/sh
-
 # SPDX-License-Identifier: BSD-2-Clause
 # SPDX-FileCopyrightText: 2025 g-Projets
-
 
 # g-guest - Topology backup & restore (YAML) with SHA256 integrity
 # Usage:
@@ -20,10 +18,28 @@ SEG_BIN="${SEG_BIN:-${BASE_DIR}/bin/segments.sh}"
 have(){ command -v "$1" >/dev/null 2>&1; }
 err(){ echo "ERROR: $*" >&2; exit 1; }
 
+# Pick a VALE ctl command (FreeBSD: valectl; some builds: vale-ctl)
+VALECTL=""
+detect_vale_ctl(){
+  if [ -z "${VALECTL}" ]; then
+    if have valectl; then VALECTL="valectl";
+    elif have vale-ctl; then VALECTL="vale-ctl";
+    else VALECTL=""; fi
+  fi
+}
+
+# SHA256 portable: FreeBSD (sha256 -q) / Linux (sha256sum)
+sha256_stdin(){
+  if have sha256; then sha256 -q
+  elif have sha256sum; then sha256sum | awk '{print $1}'
+  else err "no sha256/sha256sum available"; fi
+}
+
 dump_file_as_yaml_block(){
   path="$1"
   if [ -r "$path" ]; then
-    mode="$(stat -f %p "$path" 2>/dev/null | tail -c 5 || echo 0644)"
+    # FreeBSD: %OLp => octal perms (e.g. 644)
+    mode="$(stat -f '%OLp' "$path" 2>/dev/null || echo 644)"
     echo "  - path: \"$path\""
     echo "    mode: \"0${mode}\""
     echo "    content: |-"
@@ -42,8 +58,91 @@ sha256_cat_files_from_yaml(){
       sub(/^      /,"",$0)
       print
     }
-  ' "$y" | sha256 -q
+  ' "$y" | sha256_stdin
 }
+
+# --- Runtime collectors -------------------------------------------------
+
+collect_netgraph_yaml(){
+  echo "  netgraph:"
+  if have ngctl; then
+    # list all bridge nodes
+    ngctl list -l | awk '$3=="bridge"{print $2}' | while read -r br; do
+      [ -n "$br" ] || continue
+      echo "    - bridge: \"$br\""
+      echo "      links:"
+      n=2
+      # iterate existing hooks linkN
+      while ngctl msg "${br}:" getstats "link${n}" >/dev/null 2>&1; do
+        # find peer node (first field after name)
+        peer="$(ngctl show -n "${br}:link${n}" 2>/dev/null | awk 'NR==1{print $2}')"
+        ifname=""
+        if [ -n "$peer" ]; then
+          ifname="$(ngctl list -l | awk -v p="$peer" '$2==p{print $1}' | head -1)"
+        fi
+        echo "        - hook: \"link${n}\""
+        echo "          if: \"${ifname:-}\""
+        n=$((n+1))
+      done
+    done
+  else
+    echo "    - error: \"ngctl not available\""
+  fi
+}
+
+collect_vale_yaml(){
+  echo "  vale:"
+  detect_vale_ctl
+  if [ -n "$VALECTL" ]; then
+    # try to list actual switches/ports (valectl -l)
+    if "$VALECTL" -l >/dev/null 2>&1; then
+      # typical output contains lines like: vale-<name>:<port> ...
+      # We build a map switch -> ports[]
+      "$VALECTL" -l 2>/dev/null | awk '
+        # crude parse: split tokens like "vale-foo:bar"
+        {
+          for(i=1;i<=NF;i++){
+            if($i ~ /^vale[-0-9A-Za-z_]*:[^ ]+$/){
+              split($i, a, ":"); sw=a[1]; pt=a[2];
+              print sw, pt;
+            }
+          }
+        }' | sort -u | awk '
+          BEGIN{prev=""; first=1}
+          {
+            sw=$1; pt=$2
+            if(sw!=prev){
+              if(prev!=""){ print "      ]" }
+              print "    - switch: \"" sw "\""
+              print "      ports: ["
+              prev=sw
+              first=1
+            }
+            if(first){ printf "        \"%s\"", pt; first=0 }
+            else     { printf ", \"%s\"", pt }
+            printf "\n"
+          }
+          END{
+            if(prev!=""){ print "      ]" }
+          }'
+    else
+      # fallback: declared from networks.yaml
+      declared="$(awk '/^\s*-\s*name:/{print $3}' "$NETWORKS_YAML" 2>/dev/null || true)"
+      if [ -n "$declared" ]; then
+        for n in $declared; do
+          echo "    - switch: \"vale-${n}\""
+          echo "      ports: []"
+        done
+      else
+        echo "    - note: \"no declared VALE switches found in networks.yaml\""
+      fi
+    fi
+  else
+    echo "    - error: \"valectl/vale-ctl not available\""
+  fi
+}
+
+# --- Commands -----------------------------------------------------------
 
 backup(){
   mkdir -p "$OUT_DIR"
@@ -59,42 +158,8 @@ backup(){
     dump_file_as_yaml_block "$NETWORKS_YAML"
 
     echo "runtime:"
-    echo "  netgraph:"
-    if have ngctl; then
-      ngctl list -l | awk '$3=="bridge"{print $2}' | while read -r br; do
-        [ -n "$br" ] || continue
-        echo "    - bridge: \"$br\""
-        echo "      links:"
-        n=2
-        while ngctl msg "${br}:" getstats "link${n}" >/dev/null 2>&1; do
-          peer="$(ngctl show -n \"${br}:link${n}\" 2>/dev/null | awk 'NR==1{print $2}')"
-          ifname=""
-          if [ -n "$peer" ]; then
-            ifname="$(ngctl list -l | awk -v p=\"$peer\" '$2==p{print $1}' | head -1)"
-          fi
-          echo "        - hook: \"link${n}\""
-          echo "          if: \"${ifname:-}\""
-          n=$((n+1))
-        done
-      done
-    else
-      echo "    - error: \"ngctl not available\""
-    fi
-
-    echo "  vale:"
-    if have vale-ctl; then
-      declared="$(awk '/^\s*-\s*name:/{print $3}' "$NETWORKS_YAML" 2>/dev/null || true)"
-      if [ -n "$declared" ]; then
-        for n in $declared; do
-          echo "    - switch: \"vale-${n}\""
-          echo "      ports: []"
-        done
-      else
-        echo "    - note: \"no declared VALE switches found in networks.yaml\""
-      fi
-    else
-      echo "    - error: \"vale-ctl not available\""
-    fi
+    collect_netgraph_yaml
+    collect_vale_yaml
   } > "$tmp"
 
   files_sha="$(sha256_cat_files_from_yaml "$tmp")"

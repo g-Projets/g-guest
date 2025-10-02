@@ -8,6 +8,7 @@ g-guest/
 │   ├── switchctl           # CLI gestion des switches VALE/Netgraph (create/add/remove/show/list/ensure, ng-ifadd)
 │   ├── segments.sh         # Lecture seule: états des segments (OK/EMPTY/MISSING), diff config↔système
 │   └── router.sh           # Gestion du routeur BSDRP (VM bhyve) + plan segments côté routeur
+│   └── topology.sh         # Backup et Restore du config.
 ├── lib/
 │   ├── switch.sh           # Implémentation backend (VALE/Netgraph) + attach/detach + MAJ YAML
 │   ├── config_yaml.sh      # Upsert YAML: switch & interfaces (idempotent)
