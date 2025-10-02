@@ -3,11 +3,10 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # SPDX-FileCopyrightText: 2025 g-Projets
 
-
 # g-guest - segments manager (VALE & Netgraph)
 # Commands:
-#   ensure                   # ensure all switches from networks.yaml exist
-#   attach-if <backend> <logical> <ifname>
+#   ensure
+#   attach-if <backend> <logical> <ifname> [mode]   # mode: a|h|exclusive|shared (default: h/shared)
 #   detach-if <backend> <logical> <ifname>
 
 set -eu
@@ -21,8 +20,14 @@ info(){ echo "INFO: $*"; }
 warn(){ echo "WARN: $*" >&2; }
 err(){ echo "ERROR: $*" >&2; exit 1; }
 
+# -------- VALE: valectl uniquement (FreeBSD) --------
+VALECTL="valectl"
+need "$VALECTL"
+
+# -------- Netgraph helpers --------
 have_access_lib=0
 if [ -r "${BASE_DIR}/lib/access.sh" ]; then
+  # shellcheck disable=SC1090
   . "${BASE_DIR}/lib/access.sh"
   have_access_lib=1
 fi
@@ -51,10 +56,16 @@ ng_host_if_ensure_raw(){
   echo "$ifn"
 }
 
+# -------- VALE helpers --------
+# Matérialise le switch VALE même sans port en créant un port persistant "anchor"
+# puis en l'attachant côté host (-h). Idempotent.
 vale_switch_ensure(){
-  need vale-ctl
-  sw="$1"
-  vale-ctl -n "$sw" >/dev/null 2>&1 || true
+  sw="$1"               # ex: vale-mgmt
+  anchor="v_${sw}_anchor"
+  # Crée un port persistant si absent
+  $VALECTL -n "$anchor" >/dev/null 2>&1 || true
+  # Attache l’ancre en mode 'host' pour que le switch existe visiblement
+  $VALECTL -h "${sw}:${anchor}" >/dev/null 2>&1 || true
 }
 
 list_networks(){
@@ -90,8 +101,8 @@ ensure(){
 }
 
 attach_if(){
-  b="$1"; n="$2"; ifn="$3"
-  [ -n "$b" ] && [ -n "$n" ] && [ -n "$ifn" ] || err "attach-if <backend> <logical> <ifname>"
+  b="$1"; n="$2"; ifn="$3"; mode="${4:-${VALE_ATTACH_MODE:-h}}"
+  [ -n "$b" ] && [ -n "$n" ] && [ -n "$ifn" ] || err "attach-if <backend> <logical> <ifname> [mode]"
   case "$b" in
     netgraph)
       sw="sw-${n}"
@@ -107,8 +118,12 @@ attach_if(){
     vale)
       vsw="vale-${n}"
       vale_switch_ensure "$vsw"
-      need vale-ctl
-      vale-ctl -h "${vsw}:${ifn}" >/dev/null
+      case "$mode" in
+        a|exclusive) opt="-a" ;;   # attache exclusif (retire l’if de la pile host)
+        h|shared|"" ) opt="-h" ;;  # attache partagé (garde l’if côté host)
+        *) err "mode invalide pour VALE (utilise a|h|exclusive|shared)" ;;
+      esac
+      $VALECTL $opt "${vsw}:${ifn}" >/dev/null
       ;;
     *) err "unknown backend $b" ;;
   esac
@@ -116,14 +131,15 @@ attach_if(){
 
 detach_if(){
   b="$1"; n="$2"; ifn="$3"
+  [ -n "$b" ] && [ -n "$n" ] && [ -n "$ifn" ] || err "detach-if <backend> <logical> <ifname>"
   case "$b" in
     netgraph)
       ngctl shutdown "${ifn}:" >/dev/null 2>&1 || true
       ;;
     vale)
       vsw="vale-${n}"
-      need vale-ctl
-      vale-ctl -r "${vsw}:${ifn}" >/dev/null 2>&1 || true
+      # Détache du switch (valectl -d). Ne supprime PAS le port persistant (-r).
+      $VALECTL -d "${vsw}:${ifn}" >/dev/null 2>&1 || true
       ;;
     *) err "unknown backend $b" ;;
   esac
@@ -132,7 +148,7 @@ detach_if(){
 cmd="${1:-}"; shift || true
 case "$cmd" in
   ensure) ensure ;;
-  attach-if) attach_if "${1:-}" "${2:-}" "${3:-}" ;;
+  attach-if) attach_if "${1:-}" "${2:-}" "${3:-}" "${4:-}" ;;
   detach-if) detach_if "${1:-}" "${2:-}" "${3:-}" ;;
-  *) echo "Usage: $0 {ensure|attach-if <backend> <logical> <if>|detach-if <backend> <logical> <if>}" >&2; exit 1 ;;
+  *) echo "Usage: $0 {ensure|attach-if <backend> <logical> <if> [a|h]|detach-if <backend> <logical> <if>}" >&2; exit 1 ;;
 esac
