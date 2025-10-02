@@ -1,0 +1,114 @@
+#!/bin/sh
+# PROVIDE: g-guest_router
+# REQUIRE: FILESYSTEMS
+# BEFORE:  DAEMON
+# KEYWORD: shutdown
+
+# g-guest router (BSDRP sous bhyve)
+#
+# rc.conf :
+#   g_guest_router_enable="YES"
+#   g_guest_base="/usr/local/g-guest"    # optionnel
+#   g_guest_router_name="BSDRP"          # optionnel; sinon déduit de router.yaml
+#   g_guest_router_args=""               # args supplémentaires (ex. --uefi, --slots N)
+
+. /etc/rc.subr
+
+name="g-guest_router"
+rcvar="g_guest_router_enable"
+
+: ${g_guest_router_enable:="NO"}
+: ${g_guest_base:="/usr/local/g-guest"}
+: ${g_guest_router_args:=""}
+
+load_rc_config $name
+
+ROUTER_BIN="${g_guest_base}/bin/router.sh"
+CFG_DIR="${g_guest_base}/config"
+ROUTER_YAML="${CFG_DIR}/router.yaml"
+
+required_files="${ROUTER_BIN}"
+
+start_cmd="${name}_start"
+stop_cmd="${name}_stop"
+status_cmd="${name}_status"
+restart_cmd="${name}_restart"
+extra_commands="onestart onestatus"
+
+# Déduire le nom de VM si non fourni
+_get_vm_name()
+{
+    if [ -n "${g_guest_router_name}" ]; then
+        echo "${g_guest_router_name}"
+        return 0
+    fi
+    # extraction simple depuis YAML: ligne "name: <vmname>"
+    if [ -r "${ROUTER_YAML}" ]; then
+        awk '/^[[:space:]]*name:[[:space:]]*/{print $$2; exit}' "${ROUTER_YAML}"
+        return 0
+    fi
+    # fallback
+    echo "BSDRP"
+}
+
+# PID(s) bhyve pour la VM
+_bhyve_pid()
+{
+    vmn="$1"
+    pgrep -fx "bhyve: ${vmn}" 2>/dev/null
+}
+
+# PID(s) chargeur (bhyveload/grub-bhyve) si en phase de boot
+_loader_pid()
+{
+    vmn="$1"
+    pgrep -fl "grub-bhyve|bhyveload" | awk -v v="$vmn" '$$0 ~ (" "v"$$"){print $$1}'
+}
+
+${name}_start()
+{
+    echo "g-guest router: start…"
+    "${ROUTER_BIN}" start ${g_guest_router_args}
+}
+
+${name}_stop()
+{
+    echo "g-guest router: stop…"
+    vmn="$(_get_vm_name)"
+    "${ROUTER_BIN}" stop "${vmn}"
+}
+
+${name}_restart()
+{
+    echo "g-guest router: restart…"
+    vmn="$(_get_vm_name)"
+    "${ROUTER_BIN}" restart "${vmn}"
+}
+
+${name}_status()
+{
+    vmn="$(_get_vm_name)"
+    echo "g-guest router status (vm='${vmn}'):"
+
+    # Présence du device /dev/vmm/<vm> => en cours
+    if [ -e "/dev/vmm/${vmn}" ]; then
+        echo "  state : RUNNING"
+        # PIDs bhyve
+        bhp="$(_bhyve_pid "${vmn}")"
+        if [ -n "$bhp" ]; then
+            echo "  bhyve : PID ${bhp}"
+        else
+            echo "  bhyve : (PID non trouvé)"
+        fi
+        # PID(s) loader éventuel
+        ldp="$(_loader_pid "${vmn}")"
+        [ -n "$ldp" ] && echo "  loader: PID ${ldp}"
+    else
+        echo "  state : STOPPED"
+        # si loader en cours mais pas /dev/vmm -> phase de boot
+        ldp="$(_loader_pid "${vmn}")"
+        [ -n "$ldp" ] && echo "  loader: PID ${ldp} (bootloader actif)"
+    fi
+}
+
+run_rc_command "$1"

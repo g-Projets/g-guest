@@ -1,35 +1,67 @@
 #!/bin/sh
-
-# SPDX-License-Identifier: BSD-2-Clause
-# SPDX-FileCopyrightText: 2025 g-Projets
-
-
-# PROVIDE: g_guest_segments
-# REQUIRE: FILESYSTEMS NETWORKING netif
-# BEFORE:  LOGIN
+# PROVIDE: g-guest_segments
+# REQUIRE: FILESYSTEMS
 # KEYWORD: shutdown
+
+# g-guest segments: vérifie et affiche l'état des segments (VALE/Netgraph)
+# Ce service n'est pas un démon ; il exécute une action one-shot au boot.
+#
+# rc.conf :
+#   g_guest_segments_enable="YES"
+#   g_guest_base="/usr/local/g-guest"            # optionnel (défaut)
+#   g_guest_segments_args="--json"               # optionnel
 
 . /etc/rc.subr
 
-name="g_guest_segments"
-rcvar="${name}_enable"
+name="g-guest_segments"
+rcvar="g_guest_segments_enable"
+
+: ${g_guest_segments_enable:="NO"}
+: ${g_guest_base:="/usr/local/g-guest"}
 
 load_rc_config $name
 
-: ${g_guest_segments_enable:="NO"}
-: ${g_guest_segments_basedir:="/usr/local/g-guest"}
+SEG_BIN="${g_guest_base}/bin/segments.sh"
+: ${g_guest_segments_args:=""}
+
+required_files="${SEG_BIN}"
 
 start_cmd="${name}_start"
-stop_cmd=":"
+status_cmd="${name}_status"
+restart_cmd="${name}_restart"
+extra_commands="reload onestart onestatus"
+reload_cmd="${name}_reload"
 
-g_guest_segments_start() {
-    SEG="${g_guest_segments_basedir}/bin/segments.sh"
-    if [ ! -x "$SEG" ]; then
-        echo "g_guest_segments: missing $SEG" >&2
-        return 1
-    }
-    echo "g_guest_segments: ensuring network segments..."
-    "$SEG" ensure
+${name}_start()
+{
+    echo "g-guest segments: ensure (lecture seule)…"
+    "${SEG_BIN}" ensure ${g_guest_segments_args}
+}
+
+${name}_reload()
+{
+    # même action que start (lecture seule)
+    ${name}_start
+}
+
+${name}_restart()
+{
+    # lecture seule: restart = reload
+    ${name}_reload
+}
+
+${name}_status()
+{
+    # Affiche un résumé d'état ; si --json dans args on le laisse tel quel.
+    if echo "${g_guest_segments_args}" | grep -q -- "--json"; then
+        echo "g-guest segments status (JSON):"
+        "${SEG_BIN}" ensure ${g_guest_segments_args}
+        return
+    fi
+
+    echo "g-guest segments status:"
+    "${SEG_BIN}" ensure | sed 's/^/  /'
+    echo "note: service non daemonisé (pas de PID)."
 }
 
 run_rc_command "$1"

@@ -2,29 +2,42 @@ g-guest (minimal bundle)
 ========================
 
 This archive contains a minimal, self-contained starter of g-guest:
-- bin/router.sh     : BSDRP VM orchestrator (bhyve)
-- bin/segments.sh   : VALE & Netgraph segments manager
-- bin/topology.sh   : Backup/Restore topology YAML (with SHA256)
-- lib/access.sh     : PF NAT, netgraph attach, SSH helper
-- rc.d/g_guest_segments : rc.d script to ensure segments on boot
-- config/router.yaml, config/networks.yaml : templates to start
 
-Quick install
--------------
-# as root
-install -d /usr/local/g-guest/{bin,lib,config,backups,logs}
-cp -a g-guest/bin/*.sh /usr/local/g-guest/bin/
-cp -a g-guest/lib/*.sh /usr/local/g-guest/lib/
-cp -a g-guest/config/*.yaml /usr/local/g-guest/config/
-install -m 0755 g-guest/rc.d/g_guest_segments /usr/local/etc/rc.d/g_guest_segments
+g-guest/
+├── bin/
+│   ├── switchctl           # CLI gestion des switches VALE/Netgraph (create/add/remove/show/list/ensure, ng-ifadd)
+│   ├── segments.sh         # Lecture seule: états des segments (OK/EMPTY/MISSING), diff config↔système
+│   └── router.sh           # Gestion du routeur BSDRP (VM bhyve) + plan segments côté routeur
+├── lib/
+│   ├── switch.sh           # Implémentation backend (VALE/Netgraph) + attach/detach + MAJ YAML
+│   ├── config_yaml.sh      # Upsert YAML: switch & interfaces (idempotent)
+│   └── access.sh           # (optionnel) helpers PF/ssh/ngctl communs
+├── config/
+│   ├── networks.yaml       # Définition des switches + interfaces (name/mode a|h)
+│   └── router.yaml         # Définition du routeur (image, CPU/RAM, disques, segments à attacher)
+├── logs/                   # Journaux (créé à l’usage)
+├── var/
+│   └── run/                # Fichiers runtime
+│       └── ngmap_*.db      # Mapping persistant ifname↔linkN (Netgraph) par logical
+├── man/
+│   └── man8/
+│       ├── switchctl.8     # Page de man pour switchctl(8)
+│       ├── segments.8      # Page de man pour segments.sh(8)
+│       └── router.8        # Page de man pour router.sh(8)
+└── README.md               # Présentation rapide + exemples d’usage
 
-chmod 0755 /usr/local/g-guest/bin/*.sh /usr/local/g-guest/lib/*.sh
-chmod 0644 /usr/local/g-guest/config/*.yaml
+
+# en root
+make install
+make enable
+make start
+
+# maintenance
+make restart
+make status
+make uninstall
 
 sysrc g_guest_segments_enable=YES
-service g_guest_segments start
-
-Segments then router:
-  /usr/local/g-guest/bin/segments.sh ensure
-  /usr/local/g-guest/bin/router.sh apply
-  /usr/local/g-guest/lib/access.sh up
+sysrc g_guest_router_enable=YES
+service g-guest_segments start
+service g-guest_router start

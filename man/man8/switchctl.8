@@ -1,0 +1,195 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\" SPDX-FileCopyrightText: 2016 Matt Churchyard <churchers@gmail.com>
+.\" SPDX-FileCopyrightText: 2025 g-Projets
+.Dd October 2, 2025
+.Dt SWITCHCTL 8
+.Os
+.Sh NAME
+.Nm switchctl
+.Nd gestion des switches VALE et Netgraph pour g-guest
+.Sh SYNOPSIS
+.Nm
+.Cm create
+.Op Fl b Ar vale | netgraph
+.Op Fl a Ar anchor
+.Op Fl M Ar a | h
+.Ar logical
+.Pp
+.Nm
+.Cm delete
+.Op Fl b Ar vale | netgraph
+.Op Cm --force
+.Ar logical
+.Pp
+.Nm
+.Cm add
+.Op Fl b Ar vale | netgraph
+.Op Fl M Ar a | h
+.Ar logical
+.Ar ifname_or_port
+.Pp
+.Nm
+.Cm remove
+.Op Fl b Ar vale | netgraph
+.Ar logical
+.Ar ifname_or_port
+.Pp
+.Nm
+.Cm show
+.Op Fl b Ar vale | netgraph
+.Op Cm --json
+.Op Cm --list-ports
+.Ar logical
+.Pp
+.Nm
+.Cm list
+.Op Cm --json
+.Op Cm --from-config
+.Pp
+.Nm
+.Cm ensure
+.Op Cm --json
+.Op Cm --list-ports
+.Pp
+.Nm
+.Cm ng-ifadd
+.Op Fl M Ar a | h
+.Op Fl n Ar ifname
+.Op Cm --no-attach
+.Ar logical
+.Sh DESCRIPTION
+Le programme
+.Nm
+administre les segments réseau de l'orchestrateur g-guest, basés sur
+.Xr valectl 8
+(VALE/netmap) et
+.Xr ngctl 8
+(Netgraph).
+Il travaille de concert avec
+.Pa /usr/local/g-guest/lib/switch.sh
+et met à jour le fichier YAML
+.Pa /usr/local/g-guest/config/networks.yaml
+lorsque cela est possible (ajout ou suppression d’interfaces).
+.Pp
+Deux modes d’attache sont utilisés :
+.Bl -tag -width ".It a"
+.It a
+(ancre) : port dédié au switch (VALE : \-a, Netgraph : eiface créée et connectée).
+.It h
+(hôte) : interface existante du système (ex. em0, ngeth1) attachée au switch (VALE : \-h, Netgraph : connexion via
+.Xr ngctl 8 ) .
+.El
+.Pp
+Pour Netgraph,
+.Nm
+maintient un mappage persistant
+(association ifname \[la] hook linkN) dans
+.Pa /var/run/g-guest/ngmap_ Ns Ar logical Ns .db
+afin de cibler précisément le hook lors d’un
+.Cm remove .
+.Pp
+La commande
+.Cm ensure
+est strictement en lecture seule : elle affiche l’état des switches (OK/EMPTY/MISSING) et les divergences configuration/système, sans correction.
+.Sh OPTIONS
+.Bl -tag -width ".Fl M Ar a | h"
+.It Fl b Ar vale | netgraph
+Force le backend si non renseigné dans
+.Pa networks.yaml .
+.It Fl a Ar anchor
+Nom du port d’ancre (VALE : valectl \-a;
+Netgraph : nom de l’eiface créée).
+.It Fl M Ar a | h
+Mode d’attache (ancre ou hôte).
+Par défaut :
+.Cm a
+pour
+.Cm create
+et
+.Cm ng-ifadd ;
+.Cm h
+pour
+.Cm add .
+.It Fl n Ar ifname
+Nom explicite de l’eiface créée par
+.Cm ng-ifadd
+(Netgraph).
+.It Cm --no-attach
+Avec
+.Cm ng-ifadd ,
+crée l’eiface sans la connecter au bridge.
+.It Cm --json
+Sortie JSON (pour
+.Cm show , list , ensure ) .
+.It Cm --list-ports
+Inclut la liste des ports/HOOKs système détectés (VALE/Netgraph).
+.It Cm --from-config
+Pour
+.Cm list ,
+affiche les switches à partir de
+.Pa networks.yaml
+au lieu d’inspecter le système.
+.It Cm --force
+Pour
+.Cm delete
+(Netgraph), supprime le bridge après tentative de déconnexion des hooks.
+.El
+.Sh EXAMPLES
+.Cm Créer
+un switch VALE
+.Em mgmt
+avec une ancre :
+.Bd -literal -offset indent
+switchctl create -b vale -a v_mgmt_anchor -M a mgmt
+.Ed
+.Pp
+Attacher l’interface hôte
+.Em em0
+au switch VALE
+.Em mgmt :
+.Bd -literal -offset indent
+switchctl add -b vale -M h mgmt em0
+.Ed
+.Pp
+Créer un bridge Netgraph
+.Em lan
+avec une eiface d’ancre nommée :
+.Bd -literal -offset indent
+switchctl create -b netgraph -a n_lan_anchor lan
+.Ed
+.Pp
+Créer une eiface Netgraph nommée automatiquement et l’attacher :
+.Bd -literal -offset indent
+switchctl ng-ifadd -M a lan
+.Ed
+.Sh FILES
+.Bl -tag -width ".Pa /usr/local/g-guest/config/networks.yaml"
+.It Pa /usr/local/g-guest/config/networks.yaml
+Définition déclarative des switches et interfaces (mode a|h).
+.It Pa /var/run/g-guest/ngmap_*.db
+Mappage ifname \[la] linkN pour Netgraph.
+.El
+.Sh DIAGNOSTICS
+Messages
+.Dq OK , EMPTY , MISSING
+émis par
+.Cm ensure
+pour qualifier l’état des switches.
+.Sh EXIT STATUS
+.Ex -std
+.Sh SEE ALSO
+.Xr valectl 8 ,
+.Xr ngctl 8 ,
+.Xr ifconfig 8 ,
+.Xr netmap 4 ,
+.Xr ng_bridge 4 ,
+.Xr ng_eiface 4 ,
+.Xr segments 8 ,
+.Xr router 8
+.Sh AUTHORS
+.An g-Projets
+.br
+Basé sur des idées de
+.An Matt Churchyard .
+.Sh LICENSE
+BSD-2-Clause.

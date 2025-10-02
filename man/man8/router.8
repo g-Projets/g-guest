@@ -1,0 +1,149 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\" SPDX-FileCopyrightText: 2025 g-Projets
+.Dd October 2, 2025
+.Dt ROUTER 8
+.Os
+.Sh NAME
+.Nm router.sh
+.Nd gestion du routeur BSDRP dans bhyve et plan de segments
+.Sh SYNOPSIS
+.Nm
+.Cm init
+.Fl i Ar image.img | image.img.xz
+.Op Fl n Ar name
+.Op Fl c Ar vcpu
+.Op Fl m Ar memory
+.Op Cm --uefi
+.Op Cm --slots Ar N
+.Pp
+.Nm
+.Cm start
+.Op Ar name
+.Pp
+.Nm
+.Cm stop
+.Op Ar name
+.Pp
+.Nm
+.Cm restart
+.Op Ar name
+.Pp
+.Nm
+.Cm console
+.Op Ar name
+.Pp
+.Nm
+.Cm disk-create
+.Fl s Ar size
+.Op Fl t Ar file | zvol | sparse-zvol
+.Op Ar name
+.Pp
+.Nm
+.Cm attach
+.Fl b Ar vale | netgraph
+.Fl M Ar a | h
+.Ar logical
+.Ar ifname_or_port
+.Op Cm --vm Ar name
+.Pp
+.Nm
+.Cm detach
+.Fl b Ar vale | netgraph
+.Ar logical
+.Ar ifname_or_port
+.Op Cm --vm Ar name
+.Pp
+.Nm
+.Cm plan
+.Op Cm --json
+.Sh DESCRIPTION
+Le script
+.Nm
+automatise la mise en place minimale d’un routeur
+.Bx
+BSDRP sous
+.Xr bhyve 8
+à partir d’une image disque
+.Pa .img
+ou
+.Pa .img.xz .
+Il s’intègre aux segments réseau g-guest (VALE/Netgraph) pour attacher les interfaces selon un plan déclaré.
+.Pp
+Les sous-commandes principales :
+.Bl -tag -width ".Cm disk-create"
+.It Cm init
+Prépare un invité BSDRP (création du disque, décompression optionnelle, configuration de base).
+.It Cm start , Cm stop , Cm restart , Cm console
+Cycle de vie et console série (nmdm/tmux) de la VM.
+.It Cm disk-create
+Crée et ajoute un disque supplémentaire (fichier ou zvol), utile pour la persistance ou la télémetrie.
+.It Cm attach , Cm detach
+Attache/détache une interface au segment logique
+.Ar logical
+sur le backend choisi (VALE/Netgraph), en s’appuyant sur
+.Xr switchctl 8
+et en mettant à jour la configuration si possible.
+.It Cm plan
+Affiche le plan de segments attendu pour le routeur (lecture de
+.Pa networks.yaml
+et/ou d’un
+.Pa router.yaml ) ;
+avec
+.Cm --json
+la sortie est parseable.
+.El
+.Pp
+Par design, la création d’interfaces hôte (tap, vether, etc.) n’est pas du ressort de
+.Nm ,
+sauf pour les ancres Netgraph (eiface) nécessaires à l’existence d’un bridge.
+.Sh OPTIONS
+.Bl -tag -width ".Cm --slots Ar N"
+.It Fl i Ar image
+Chemin vers l’image BSDRP
+.Pa .img
+(ou
+.Pa .img.xz ) .
+.It Fl n Ar name
+Nom de la VM routeur (par défaut défini par la configuration).
+.It Fl c Ar vcpu
+Nombre de vCPU.
+.It Fl m Ar memory
+Taille mémoire (ex. 1G, 2048M).
+.It Cm --uefi
+Démarrage en UEFI si le firmware bhyve approprié est installé.
+.It Cm --slots Ar N
+Réserve N slots PCI libres pour ajout à chaud d’interfaces.
+.It Fl b Ar vale | netgraph
+Backend du segment lors d’un
+.Cm attach
+ou
+.Cm detach .
+.It Fl M Ar a | h
+Mode d’attache (ancre ou hôte) lors d’un
+.Cm attach .
+.It Cm --vm Ar name
+Cible explicitement une VM routeur si plusieurs existent.
+.It Cm --json
+Sortie JSON pour
+.Cm plan .
+.El
+.Sh FILES
+.Bl -tag -width ".Pa /usr/local/g-guest/config/router.yaml"
+.It Pa /usr/local/g-guest/config/router.yaml
+Paramètres VM BSDRP (image, CPU/RAM, disques) et préférences d’attache.
+.It Pa /usr/local/g-guest/config/networks.yaml
+Définition des segments (backend, interfaces).
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh SEE ALSO
+.Xr bhyve 8 ,
+.Xr bhyveload 8 ,
+.Xr valectl 8 ,
+.Xr ngctl 8 ,
+.Xr switchctl 8 ,
+.Xr segments 8
+.Sh AUTHORS
+.An g-Projets
+.Sh LICENSE
+BSD-2-Clause.

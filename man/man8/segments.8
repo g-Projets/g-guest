@@ -1,0 +1,78 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\" SPDX-FileCopyrightText: 2025 g-Projets
+.Dd October 2, 2025
+.Dt SEGMENTS 8
+.Os
+.Sh NAME
+.Nm segments.sh
+.Nd état des segments VALE et Netgraph (lecture seule)
+.Sh SYNOPSIS
+.Nm
+.Cm ensure
+.Op Cm --json
+.Op Cm --list-ports
+.Op Ar logical ...
+.Sh DESCRIPTION
+Le script
+.Nm
+vérifie l’existence et l’état des switches définis dans
+.Pa /usr/local/g-guest/config/networks.yaml .
+Il n’effectue aucune correction.
+.Pp
+Pour chaque entrée, il indique :
+.Bl -dash
+.It
+VALE : 
+.Dq OK
+(au moins un port non ancre),
+.Dq EMPTY
+(ports d’ancre uniquement),
+.Dq MISSING
+(aucun port, switch inexistant).
+.It
+Netgraph :
+.Dq OK
+(bridge présent avec au moins un hook),
+.Dq EMPTY
+(bridge présent sans hook),
+.Dq MISSING
+(bridge absent).
+.El
+.Pp
+Avec
+.Cm --list-ports ,
+les ports (VALE) ou hooks linkN (Netgraph) détectés sur le système sont listés.
+Avec
+.Cm --json ,
+la sortie devient un document JSON parseable incluant un diff configuration/système.
+.Pp
+Des scripts tels que
+.Xr switchctl 8
+ou l’orchestrateur peuvent être utilisés pour créer ou attacher des interfaces séparément.
+.Sh OPTIONS
+.Bl -tag -width ".Cm --list-ports"
+.It Cm --json
+Sortie JSON détaillée (incluant état et diff).
+.It Cm --list-ports
+Inclut la liste des ports (VALE) ou hooks (Netgraph) présents côté système.
+.It Ar logical ...
+Restreint la vérification à un ou plusieurs réseaux logiques.
+.El
+.Sh FILES
+.Bl -tag -width ".Pa /usr/local/g-guest/config/networks.yaml"
+.It Pa /usr/local/g-guest/config/networks.yaml
+Définition déclarative des switches (nom logique, backend, interfaces).
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh SEE ALSO
+.Xr switchctl 8 ,
+.Xr valectl 8 ,
+.Xr ngctl 8 ,
+.Xr netmap 4 ,
+.Xr ng_bridge 4 ,
+.Xr ng_eiface 4
+.Sh AUTHORS
+.An g-Projets
+.Sh LICENSE
+BSD-2-Clause.

@@ -1,11 +1,18 @@
 version: 1
 networks:
   - name: mgmt
-    backend: netgraph
-    options:
-      autostart: true
+    backend: vale              # vale | netgraph
+    # anchor: v_mgmt_anchor    # (facultatif) nom du port "ancre"
+    interfaces:                # liste des interfaces attendues et leur mode d’attache
+      - name: em0              # ifnet hôte existant
+        mode: h                # h = host-shared (valectl -h) | pour netgraph = ifnet connecté
+      - name: v_mgmt_anchor    # port netmap exclusif (pas un ifnet)
+        mode: a                # a = anchor/exclusive (valectl -a) | pour netgraph = eiface anchor
 
-  - name: fabric
-    backend: vale
-    options:
-      autostart: false
+  - name: lan
+    backend: netgraph
+    interfaces:
+      - name: n_lan_anchor     # eiface anchor (créée pour matérialiser le bridge)
+        mode: a
+      - name: ngeth1           # ifnet (eiface ou carte hôte)
+        mode: h

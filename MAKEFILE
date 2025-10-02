@@ -1,0 +1,183 @@
+# g-guest — Makefile d'installation COMPLETE (FreeBSD / bmake compatible)
+# Installe binaires, bibliothèques shell, configs, scripts rc.d et manpages.
+# Ajoute des cibles service et un status riche (via rc.d et pgrep).
+
+SHELL      ?= /bin/sh
+
+# ----- Répertoires de destination -----
+PREFIX     ?= /usr/local
+BASE       ?= $(PREFIX)/g-guest
+
+BIN_DIR    := $(BASE)/bin
+LIB_DIR    := $(BASE)/lib
+CFG_DIR    := $(BASE)/config
+LOG_DIR    := /var/log/g-guest
+RUN_DIR    := /var/run/g-guest
+RCD_DIR    := $(PREFIX)/etc/rc.d
+MAN8_DIR   := $(PREFIX)/man/man8
+
+# ----- Fichiers source du projet -----
+BIN_FILES  := bin/switchctl bin/segments.sh bin/router.sh
+LIB_FILES  := lib/switch.sh lib/config_yaml.sh lib/access.sh
+CFG_FILES  := config/networks.yaml config/router.yaml
+MAN8_FILES := man/man8/switchctl.8 man/man8/segments.8 man/man8/router.8
+RCD_FILES  := rc.d/g-guest_segments rc.d/g-guest_router
+README     := README.md
+
+# ----- Cibles publiques -----
+.PHONY: all install uninstall enable disable start stop restart \
+        man whatis status check dirs
+
+all:
+	@echo "Cibles: install | uninstall | enable | disable | start | stop | restart | status"
+
+# ===== INSTALLATION COMPLÈTE =====
+install: check dirs _install_bin _install_lib _install_cfg _install_rcd _install_man _post
+	@echo ">> Installation terminée."
+
+# Vérifs minimales (présence des fichiers à installer)
+check:
+	@set -e; \
+	for f in $(BIN_FILES) $(LIB_FILES) $(CFG_FILES) $(MAN8_FILES) $(RCD_FILES); do \
+		[ -r "$$f" ] || { echo "Manquant: $$f" >&2; exit 1; }; \
+	done
+
+# Création des dossiers
+dirs:
+	@echo ">> Création des répertoires"
+	@install -d -m 0755 "$(BIN_DIR)" "$(LIB_DIR)" "$(CFG_DIR)" "$(RCD_DIR)" "$(MAN8_DIR)"
+	@install -d -m 0755 "$(LOG_DIR)" "$(RUN_DIR)"
+
+# Copie des binaires/scripts
+_install_bin:
+	@echo ">> Installation binaires -> $(BIN_DIR)"
+	@set -e; for f in $(BIN_FILES); do \
+		install -m 0755 "$$f" "$(BIN_DIR)/$$(basename $$f)"; \
+	done
+
+# Copie des bibliothèques shell
+_install_lib:
+	@echo ">> Installation libs -> $(LIB_DIR)"
+	@set -e; for f in $(LIB_FILES); do \
+		install -m 0644 "$$f" "$(LIB_DIR)/$$(basename $$f)"; \
+	done
+
+# Copie des configs (conservatif : installe .sample si déjà présent)
+_install_cfg:
+	@echo ">> Installation configuration -> $(CFG_DIR)"
+	@set -e; for f in $(CFG_FILES); do \
+		b="$$(basename $$f)"; \
+		if [ -e "$(CFG_DIR)/$$b" ]; then \
+			echo "   - $(CFG_DIR)/$$b existe, copie en .sample"; \
+			install -m 0644 "$$f" "$(CFG_DIR)/$$b.sample"; \
+		else \
+			install -m 0644 "$$f" "$(CFG_DIR)/$$b"; \
+		fi; \
+	done
+
+# rc.d
+_install_rcd:
+	@echo ">> Installation rc.d -> $(RCD_DIR)"
+	@set -e; for f in $(RCD_FILES); do \
+		install -m 0555 "$$f" "$(RCD_DIR)/$$(basename $$f)"; \
+	done
+
+# manpages + gzip + index whatis si dispo
+_install_man:
+	@echo ">> Installation man(8) -> $(MAN8_DIR)"
+	@set -e; for m in $(MAN8_FILES); do \
+		b="$$(basename $$m)"; \
+		install -m 0644 "$$m" "$(MAN8_DIR)/$$b"; \
+		gzip -f "$(MAN8_DIR)/$$b"; \
+	done
+	@$(MAKE) whatis
+
+# Post-installation : droits, message
+_post:
+	@echo ">> Permissions run/log"
+	@chmod 0755 "$(LOG_DIR)" "$(RUN_DIR)" || true
+	@echo ">> Rappel: activez les services si souhaité: 'make enable'"
+
+# ----- Mise à jour de l'index whatis (best effort) -----
+whatis:
+	@echo ">> Mise à jour whatis"
+	@if command -v makewhatis >/dev/null 2>&1; then \
+		makewhatis -u "$(PREFIX)/man" || true; \
+	elif command -v mandocdb >/dev/null 2>&1; then \
+		mandocdb -q "$(PREFIX)/man" || true; \
+	elif command -v mandb >/dev/null 2>&1; then \
+		mandb -q "$(PREFIX)/man" || true; \
+	else \
+		echo "(!) Aucun indexeur whatis (makewhatis/mandocdb/mandb) trouvé."; \
+	fi
+
+# ===== DÉSINSTALLATION =====
+uninstall: stop _uninstall_rcd _uninstall_bin _uninstall_lib _uninstall_cfg _uninstall_man
+	@echo ">> Désinstallation terminée (configs conservées si vous ne supprimez pas .sample)."
+
+_uninstall_rcd:
+	@echo ">> Suppression rc.d"
+	@set -e; for f in $(RCD_FILES); do \
+		rm -f "$(RCD_DIR)/$$(basename $$f)"; \
+	done
+
+_uninstall_bin:
+	@echo ">> Suppression binaires"
+	@set -e; for f in $(BIN_FILES); do \
+		rm -f "$(BIN_DIR)/$$(basename $$f)"; \
+	done
+
+_uninstall_lib:
+	@echo ">> Suppression libs"
+	@set -e; for f in $(LIB_FILES); do \
+		rm -f "$(LIB_DIR)/$$(basename $$f)"; \
+	done
+
+# Conserve les YAML par défaut ; à supprimer manuellement si désiré
+_uninstall_cfg:
+	@echo ">> (configs conservées) Supprimez manuellement si nécessaire: $(CFG_DIR)/*.yaml"
+
+_uninstall_man:
+	@echo ">> Suppression man(8)"
+	@set -e; for m in $(MAN8_FILES); do \
+		b="$$(basename $$m)"; \
+		rm -f "$(MAN8_DIR)/$$b" "$(MAN8_DIR)/$$b.gz"; \
+	done
+	@$(MAKE) whatis
+
+# ===== Services =====
+enable:
+	@echo ">> Activation des services au boot (sysrc)"
+	@sysrc g_guest_segments_enable=YES
+	@sysrc g_guest_router_enable=YES
+
+disable:
+	@echo ">> Désactivation des services au boot (sysrc)"
+	@sysrc g_guest_segments_enable=NO
+	@sysrc g_guest_router_enable=NO
+
+start:
+	@echo ">> Démarrage services"
+	@service g-guest_segments start || true
+	@service g-guest_router start   || true
+
+stop:
+	@echo ">> Arrêt services"
+	@service g-guest_router stop   || true
+	@service g-guest_segments stop || true
+
+restart: stop start
+
+# ===== Status détaillé (services + PIDs utiles) =====
+status:
+	@echo "== g-guest_segments =="
+	@service g-guest_segments onestatus || true
+	@echo
+	@echo "== g-guest_router =="
+	@service g-guest_router onestatus || true
+	@echo
+	@echo "== bhyve VMs =="
+	@pgrep -alf '^bhyve: ' || echo "(aucune VM bhyve active)"
+	@echo
+	@echo "== Processus g-guest (si daemonisés) =="
+	@pgrep -alf 'g-guest' || echo "(aucun processus g-guest dédié détecté)"
