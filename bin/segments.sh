@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # SPDX-FileCopyrightText: 2025 g-Projets
 #
-# g-guest - segments manager (VALE & Netgraph) - lecture/plan
+# g-guest - segments manager (VALE & Netgraph)
+# Lecture seule: état et plan de cohérence
 #
-# Commands:
-#   ensure                      # état synthétique (lecture seule)
-#   plan [--json]               # plan de cohérence (VALE + Netgraph présents/absents/surplus)
+# Usage:
+#   segments.sh ensure              # état synthétique (lecture seule)
+#   segments.sh plan [--json]       # plan détaillé (texte ou JSON)
 
 set -eu
 
@@ -15,14 +16,15 @@ CFG_DIR="${CFG_DIR:-$BASE_DIR/config}"
 NETWORKS_YAML="${NETWORKS_YAML:-$CFG_DIR/networks.yaml}"
 
 have(){ command -v "$1" >/dev/null 2>&1; }
-err(){ echo "ERROR: $*" >&2; exit 1; }
-warn(){ echo "WARN: $*" >&2; }
-info(){ echo "INFO: $*"; }
+warn(){ printf "WARN: %s\n" "$*" >&2; }
+die(){  printf "ERROR: %s\n" "$*" >&2; exit 1; }
 
-# ---------- VALE ctl detection ----------
+[ -r "$NETWORKS_YAML" ] || die "networks.yaml introuvable: $NETWORKS_YAML"
+
+# ---------------- VALE ----------------
 VALECTL=""
 detect_vale_ctl(){
-  if [ -z "${VALECTL}" ]; then
+  if [ -z "$VALECTL" ]; then
     if have valectl; then VALECTL="valectl"
     elif have vale-ctl; then VALECTL="vale-ctl"
     else VALECTL=""
@@ -30,314 +32,353 @@ detect_vale_ctl(){
   fi
 }
 
-# ---------- YAML parsing (minimal) ----------
-# Sorties:
-#  - parse_networks_yaml_vale    -> "vale-<name>|if1,if2"
-#  - parse_networks_yaml_netgraph-> "sw-<name>|if1,if2"
+# Liste "switch port" (un par ligne) en parsant la sortie sans argument
+vale_pairs(){
+  detect_vale_ctl
+  [ -n "$VALECTL" ] || return 1
+  out="$("$VALECTL" 2>/dev/null || true)"
+  printf "%s" "$out" | awk '
+    {
+      for (i=1; i<=NF; i++) {
+        if ($i ~ /^vale[^:[:space:]]*:[^[:space:]]+$/) {
+          split($i, a, ":"); print a[1], a[2];
+        }
+      }
+    }
+  ' | sort -u
+}
+vale_runtime_pairs(){ vale_pairs; }
+
+# ---------------- Netgraph ----------------
+NG_LIST_CACHE=""
+ng_list_l(){
+  if ! have ngctl; then NG_LIST_CACHE=""; return 1; fi
+  if [ -z "$NG_LIST_CACHE" ]; then NG_LIST_CACHE="$(ngctl list -l 2>/dev/null || true)"; fi
+  [ -n "$NG_LIST_CACHE" ]
+}
+ng_bridge_exists(){
+  br="$1"
+  if ! ng_list_l; then return 1; fi
+  printf "%s\n" "$NG_LIST_CACHE" | awk -v b="$br" '
+    $0 ~ ("(^|[[:space:]])" b "([[:space:]]|$)") && $0 ~ /bridge/ {found=1}
+    END{ exit(found?0:1) }
+  '
+}
+ng_link_exists(){ br="$1"; hook="$2"; ngctl msg "${br}:" getstats "$hook" >/dev/null 2>&1; }
+ng_link_peer_if(){
+  br="$1"; hook="$2"
+  peer="$(ngctl show -n "${br}:${hook}" 2>/dev/null | awk 'NR==1{print $2}')"
+  [ -n "${peer:-}" ] || { echo ""; return 0; }
+  if ng_list_l; then
+    printf "%s\n" "$NG_LIST_CACHE" | awk -v p="$peer" '
+      index($0,p)>0 && $0 ~ /eiface/ { print $1; found=1; exit }
+      END{ if(!found) exit 1 }
+    ' 2>/dev/null || true
+  else
+    echo ""
+  fi
+}
+ng_scan_links(){
+  br="$1"
+  n=2
+  while ng_link_exists "$br" "link$n"; do
+    ifn="$(ng_link_peer_if "$br" "link$n" || true)"
+    printf "%s %s\n" "link$n" "${ifn:-}"
+    n=$((n+1))
+  done
+}
+
+# ------------- Parse networks.yaml -------------
+# VALE: "vale-<logical>|if1,if2,..."
 parse_networks_yaml_vale(){
   awk '
-    BEGIN{ inN=0; inItem=0; haveName=0; haveBackend=0; inPorts=0; list="" }
-    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
-    $1=="networks:" { inN=1; next }
-    inN && $1=="-" { if(inItem && haveName && haveBackend=="vale"){ gsub(/[[:space:]]*$/,"",list); gsub(/^,*/,"",list); printf("vale-%s|%s\n", name, list) } inItem=1; name=""; haveName=0; backend=""; haveBackend=0; inPorts=0; list=""; next }
-    inN && inItem && $1=="name:" { name=$2; haveName=1; next }
-    inN && inItem && $1=="backend:" { backend=$2; haveBackend=backend; next }
-    inN && inItem && ($1=="ports:" || $1=="interfaces:") { inPorts=1; next }
-    inN && inItem && inPorts && $1=="-" && $2=="if:" { ifname=$3; gsub(/[[:space:]]*$/,"",ifname); list = list (length(list)? "," : "") ifname; next }
-    END{ if(inItem && haveName && haveBackend=="vale"){ gsub(/[[:space:]]*$/,"",list); gsub(/^,*/,"",list); printf("vale-%s|%s\n", name, list) } }
-  ' "$NETWORKS_YAML" 2>/dev/null || true
+    function flush_vale(){
+      if (backend=="vale" && name!="") {
+        gsub(/"/,"",name)
+        print "vale-" name "|" ports
+      }
+    }
+    BEGIN{inlist=0; name=""; backend=""; ports=""; inports=0}
+    $1=="networks:" {inlist=1; next}
+    inlist && $1=="-" { flush_vale(); name=""; backend=""; ports=""; inports=0; next }
+    inlist && $1=="name:" {name=$2; next}
+    inlist && $1=="backend:" {backend=$2; next}
+    # accepter 'ports:' ou 'interfaces:' côté VALE
+    inlist && backend=="vale" && ($1=="ports:" || $1=="interfaces:") {inports=1; next}
+    inlist && inports && $1=="-" && $2=="if:" {
+      ifn=$3; gsub(/"/,"",ifn); ports=(ports?ports",":"") ifn; next
+    }
+    END{ flush_vale() }
+  ' "$NETWORKS_YAML"
 }
 
+# Netgraph: "sw-<logical>|if1,if2,..."
 parse_networks_yaml_netgraph(){
   awk '
-    BEGIN{ inN=0; inItem=0; haveName=0; haveBackend=0; inPorts=0; list="" }
-    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
-    $1=="networks:" { inN=1; next }
-    inN && $1=="-" { if(inItem && haveName && haveBackend=="netgraph"){ gsub(/[[:space:]]*$/,"",list); gsub(/^,*/,"",list); printf("sw-%s|%s\n", name, list) } inItem=1; name=""; haveName=0; backend=""; haveBackend=0; inPorts=0; list=""; next }
-    inN && inItem && $1=="name:" { name=$2; haveName=1; next }
-    inN && inItem && $1=="backend:" { backend=$2; haveBackend=backend; next }
-    inN && inItem && ($1=="ports:" || $1=="interfaces:") { inPorts=1; next }
-    inN && inItem && inPorts && $1=="-" && $2=="if:" { ifname=$3; gsub(/[[:space:]]*$/,"",ifname); list = list (length(list)? "," : "") ifname; next }
-    END{ if(inItem && haveName && haveBackend=="netgraph"){ gsub(/[[:space:]]*$/,"",list); gsub(/^,*/,"",list); printf("sw-%s|%s\n", name, list) } }
-  ' "$NETWORKS_YAML" 2>/dev/null || true
+    function flush_ng(){
+      if (backend=="netgraph" && name!="") {
+        gsub(/"/,"",name)
+        print "sw-" name "|" ifs
+      }
+    }
+    BEGIN{inlist=0; name=""; backend=""; ifs=""; inports=0}
+    $1=="networks:" {inlist=1; next}
+    inlist && $1=="-" { flush_ng(); name=""; backend=""; ifs=""; inports=0; next }
+    inlist && $1=="name:" {name=$2; next}
+    inlist && $1=="backend:" {backend=$2; next}
+    inlist && backend=="netgraph" && ($1=="interfaces:" || $1=="ports:") {inports=1; next}
+    inlist && inports && $1=="-" && $2=="if:" {
+      ifn=$3; gsub(/"/,"",ifn); ifs=(ifs?ifs",":"") ifn; next
+    }
+    END{ flush_ng() }
+  ' "$NETWORKS_YAML"
 }
 
-# ---------- Runtime VALE ----------
-# Produit lignes "switch port"
-vale_runtime_pairs(){
-  detect_vale_ctl
-  [ -n "$VALECTL" ] || return 0
-  if "$VALECTL" -l >/dev/null 2>&1; then
-    "$VALECTL" -l 2>/dev/null | awk '
-      {
-        for(i=1;i<=NF;i++){
-          if($i ~ /^vale[-0-9A-Za-z_]*:[^ ]+$/){
-            split($i, a, ":"); sw=a[1]; pt=a[2];
-            print sw, pt;
-          }
+# ------------- CSV & JSON helpers -------------
+csv_diff(){
+  a="$1"; b="$2"
+  [ -n "$a" ] || { echo ""; return 0; }
+  awk -v A="$a" -v B="$b" '
+    BEGIN{
+      n=split(A,aa,","); m=split(B,bb,",")
+      for(i=1;i<=m;i++){ seen[bb[i]]=1 }
+      first=1
+      for(i=1;i<=n;i++){
+        x=aa[i]
+        if(x!="" && !seen[x]){
+          if(!first){ printf(",") } ; first=0
+          printf("%s", x)
         }
-      }' | sort -u
-  fi
+      }
+      printf("\n")
+    }'
 }
-
-# Construit map: VALE_RT_<switch> = "port1,port2"
-build_vale_runtime_map(){
-  VALE_RT_KEYS=""
-  tmp="$(mktemp)"; vale_runtime_pairs > "$tmp" || true
-  awk '{print $1}' "$tmp" | sort -u | while read -r sw; do
-    [ -n "$sw" ] || continue
-    csv="$(awk -v s="$sw" '$1==s{print $2}' "$tmp" | paste -sd, -)"
-    eval "VALE_RT_${sw}='${csv}'"
-    VALE_RT_KEYS="${VALE_RT_KEYS} ${sw}"
-  done
-  rm -f "$tmp"
-}
-
-# ---------- Runtime Netgraph ----------
-# Dump: "bridge linkN ifname" pour chaque hook; construit aussi map IF csv.
-netgraph_runtime_dump(){
-  have ngctl || return 0
-  ngctl list -l | awk '$3=="bridge"{print $2}' | while read -r br; do
-    [ -n "$br" ] || continue
-    n=2
-    while ngctl msg "${br}:" getstats "link${n}" >/dev/null 2>&1; do
-      peer="$(ngctl show -n "${br}:link${n}" 2>/dev/null | awk 'NR==1{print $2}')"
-      ifname=""
-      if [ -n "$peer" ]; then
-        ifname="$(ngctl list -l | awk -v p="$peer" '$2==p{print $1}' | head -1)"
-      fi
-      printf "%s %s %s\n" "$br" "link${n}" "$ifname"
-      n=$((n+1))
-    done
-  done
-}
-
-# Maps:
-#  NET_RT_<bridge> = "if1,if2"
-# fichiers temporaires:
-#  NET_RT_LINKS_TMP : lignes "bridge linkN ifname" (pour JSON links)
-build_netgraph_runtime_maps(){
-  NET_RT_KEYS=""
-  NET_RT_LINKS_TMP="$(mktemp)"
-  netgraph_runtime_dump > "$NET_RT_LINKS_TMP" || true
-
-  # par bridge, agrège ifnames uniques
-  awk '{print $1}' "$NET_RT_LINKS_TMP" | sort -u | while read -r br; do
-    [ -n "$br" ] || continue
-    csv="$(awk -v b="$br" '$1==b{print $3}' "$NET_RT_LINKS_TMP" | awk 'NF' | sort -u | paste -sd, -)"
-    eval "NET_RT_${br}='${csv}'"
-    NET_RT_KEYS="${NET_RT_KEYS} ${br}"
-  done
-}
-
-# ---------- CSV helpers ----------
-csv_contains(){ echo ",$1," | grep -q ",$2,"; }
-csv_diff(){ a="$1"; b="$2"; out=""; OLDIFS="$IFS"; IFS=","; for x in $a; do [ -z "$x" ] && continue; echo ",$b," | grep -q ",$x," || out="${out}${out:+,}$x"; done; IFS="$OLDIFS"; echo "$out"; }
-csv_inter(){ a="$1"; b="$2"; out=""; OLDIFS="$IFS"; IFS=","; for x in $a; do [ -z "$x" ] && continue; echo ",$b," | grep -q ",$x," && out="${out}${out:+,}$x"; done; IFS="$OLDIFS"; echo "$out"; }
-
-# ---------- PLAN JSON ----------
-plan_json(){
-  # Desired
-  DESIRED_VALE="$(parse_networks_yaml_vale || true)"
-  DESIRED_NG="$(parse_networks_yaml_netgraph || true)"
-
-  # Runtime
-  build_vale_runtime_map
-  build_netgraph_runtime_maps
-
-  echo '{'
-  echo '  "version": 1,'
-
-  # VALE
-  echo '  "vale": ['
+json_escape(){ printf "%s" "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+json_array_from_csv(){
+  csv="$1"
+  [ -n "$csv" ] || { printf "[]"; return 0; }
+  printf "["
+  oldIFS="$IFS"; IFS=,
   first=1
-  echo "$DESIRED_VALE" | while IFS='|' read -r sw ports; do
-    [ -n "$sw" ] || continue
-    desired_csv="$(echo "$ports" | tr -d '[:space:]')"
-    eval "actual_csv=\"\${VALE_RT_${sw}:-}\""
-    if [ -z "${actual_csv:-}" ]; then
-      state="MISSING"; present_csv=""; missing_csv="$desired_csv"; extra_csv=""
-    else
-      present_csv="$(csv_inter "$desired_csv" "$actual_csv")"
-      missing_csv="$(csv_diff  "$desired_csv" "$actual_csv")"
-      extra_csv="$(csv_diff  "$actual_csv"  "$desired_csv")"
-      if [ -n "$missing_csv" ] || [ -n "$extra_csv" ]; then state="DRIFT"; else state="OK"; fi
-    fi
-
-    [ $first -eq 1 ] || echo '    ,'; first=0
-    echo '    {'
-    printf '      "switch": "%s",\n' "$sw"
-    printf '      "desired_ports": [%s],\n' "$( [ -n "$desired_csv" ] && echo "\"$(echo "$desired_csv" | sed 's/,/","/g')\"" )"
-    printf '      "actual_ports":  [%s],\n' "$( [ -n "$actual_csv" ]  && echo "\"$(echo "$actual_csv"  | sed 's/,/","/g')\"" )"
-    printf '      "present_ports": [%s],\n' "$( [ -n "$present_csv" ] && echo "\"$(echo "$present_csv" | sed 's/,/","/g')\"" )"
-    printf '      "missing_ports": [%s],\n' "$( [ -n "$missing_csv" ] && echo "\"$(echo "$missing_csv" | sed 's/,/","/g')\"" )"
-    printf '      "extra_ports":   [%s],\n' "$( [ -n "$extra_csv" ]   && echo "\"$(echo "$extra_csv"   | sed 's/,/","/g')\"" )"
-    printf '      "state": "%s"\n' "$state"
-    echo '    }'
+  for it in $csv; do
+    [ -n "$it" ] || continue
+    esc="$(json_escape "$it")"
+    if [ $first -eq 1 ]; then first=0; else printf ", "; fi
+    printf "\"%s\"" "$esc"
   done
-  echo '  ],'
-
-  # NETGRAPH
-  echo '  "netgraph": ['
-  first=1
-  echo "$DESIRED_NG" | while IFS='|' read -r br desired_ports; do
-    [ -n "$br" ] || continue
-    desired_csv="$(echo "$desired_ports" | tr -d '[:space:]')"
-    eval "actual_csv=\"\${NET_RT_${br}:-}\""
-
-    # collect links JSON-friendly
-    links_json=""
-    if [ -n "${NET_RT_LINKS_TMP:-}" ] && [ -r "$NET_RT_LINKS_TMP" ]; then
-      # build an array of link objects only for this bridge
-      lj_tmp="$(mktemp)"
-      awk -v b="$br" '$1==b{print $2,$3}' "$NET_RT_LINKS_TMP" > "$lj_tmp"
-      # dump as JSON
-      links_json="$(awk 'BEGIN{f=1}
-        {
-          if(f==1){ printf("["); f=0 } else { printf(",") }
-          printf("{\"hook\":\"%s\",\"if\":\"%s\"}", $1, $2)
-        }
-        END{ if(f==1) printf("[]"); else printf("]") }' "$lj_tmp")"
-      rm -f "$lj_tmp"
-    else
-      links_json="[]"
-    fi
-
-    if [ -z "${actual_csv:-}" ]; then
-      state="MISSING"; present_csv=""; missing_csv="$desired_csv"; extra_csv=""
-    else
-      present_csv="$(csv_inter "$desired_csv" "$actual_csv")"
-      missing_csv="$(csv_diff  "$desired_csv" "$actual_csv")"
-      extra_csv="$(csv_diff  "$actual_csv"  "$desired_csv")"
-      if [ -n "$missing_csv" ] || [ -n "$extra_csv" ]; then state="DRIFT"; else state="OK"; fi
-    fi
-
-    [ $first -eq 1 ] || echo '    ,'; first=0
-    echo '    {'
-    printf '      "bridge": "%s",\n' "$br"
-    printf '      "desired_if":   [%s],\n' "$( [ -n "$desired_csv" ] && echo "\"$(echo "$desired_csv" | sed 's/,/","/g')\"" )"
-    printf '      "actual_if":    [%s],\n' "$( [ -n "$actual_csv" ]  && echo "\"$(echo "$actual_csv"  | sed 's/,/","/g')\"" )"
-    printf '      "present_if":   [%s],\n' "$( [ -n "$present_csv" ] && echo "\"$(echo "$present_csv" | sed 's/,/","/g')\"" )"
-    printf '      "missing_if":   [%s],\n' "$( [ -n "$missing_csv" ] && echo "\"$(echo "$missing_csv" | sed 's/,/","/g')\"" )"
-    printf '      "extra_if":     [%s],\n' "$( [ -n "$extra_csv" ]   && echo "\"$(echo "$extra_csv"   | sed 's/,/","/g')\"" )"
-    printf '      "links": %s,\n' "$links_json"
-    printf '      "state": "%s"\n' "$state"
-    echo '    }'
-  done
-  echo '  ]'
-
-  echo '}'
+  IFS="$oldIFS"
+  printf "]"
 }
 
-# ---------- PLAN texte ----------
-plan_text(){
-  tmp="$(mktemp)"
-  plan_json > "$tmp"
-
-  echo "== VALE =="
-  total=$(awk -F'"' '/"switch":/{c++} END{print c+0}' "$tmp")
-  ok=$(awk -F'"' '/"vale".*"state": "OK"/{c++} END{print c+0}' "$tmp")
-  drift=$(awk -F'"' '/"vale".*"state": "DRIFT"/{c++} END{print c+0}' "$tmp")
-  missing=$(awk -F'"' '/"vale".*"state": "MISSING"/{c++} END{print c+0}' "$tmp")
-  echo "total=$total ok=$ok drift=$drift missing=$missing"
-  echo
-  awk '
-    BEGIN{sect=""}
-    /"vale": \[/ {sect="vale"}
-    /"switch":/ && sect=="vale" {sw=$4}
-    /"state":/  && sect=="vale" {st=$4}
-    /"missing_ports": \[/ && sect=="vale" {getline; gsub(/[", \[\]]/,"",$0); miss=$0}
-    /"extra_ports": \[/   && sect=="vale" {getline; gsub(/[", \[\]]/,"",$0); extra=$0; printf("- %s : %s\n", sw, st); if(miss!="") printf("    missing: %s\n", miss); if(extra!="") printf("    extra  : %s\n", extra); miss=""; extra=""}
-  ' "$tmp"
-
-  echo
-  echo "== Netgraph =="
-  total=$(awk -F'"' '/"bridge":/{c++} END{print c+0}' "$tmp")
-  ok=$(awk -F'"' '/"netgraph".*"state": "OK"/{c++} END{print c+0}' "$tmp")
-  drift=$(awk -F'"' '/"netgraph".*"state": "DRIFT"/{c++} END{print c+0}' "$tmp")
-  missing=$(awk -F'"' '/"netgraph".*"state": "MISSING"/{c++} END{print c+0}' "$tmp")
-  echo "total=$total ok=$ok drift=$drift missing=$missing"
-  echo
-  awk '
-    BEGIN{sect=""}
-    /"netgraph": \[/ {sect="netgraph"}
-    /"bridge":/ && sect=="netgraph" {br=$4}
-    /"state":/  && sect=="netgraph" {st=$4}
-    /"missing_if": \[/ && sect=="netgraph" {getline; gsub(/[", \[\]]/,"",$0); miss=$0}
-    /"extra_if": \[/   && sect=="netgraph" {getline; gsub(/[", \[\]]/,"",$0); extra=$0; printf("- %s : %s\n", br, st); if(miss!="") printf("    missing: %s\n", miss); if(extra!="") printf("    extra  : %s\n", extra); miss=""; extra=""}
-  ' "$tmp"
-
-  rm -f "$tmp"
-}
-
-# ---------- ensure (lecture seule) ----------
-ensure(){
-  detect_vale_ctl
-  echo "Segments status (read-only):"
-
-  # VALE
+# ------------- ENSURE (texte) -------------
+ensure_vale(){
   echo " VALE:"
-  if [ -n "$VALECTL" ] && "$VALECTL" -l >/dev/null 2>&1; then
-    parse_networks_yaml_vale | while IFS='|' read -r sw ports; do
-      desired_csv="$(echo "$ports" | tr -d '[:space:]')"
-      actual_csv="$("$VALECTL" -l 2>/dev/null | awk -v s="$sw" '{ for(i=1;i<=NF;i++){ if($i ~ ("^" s ":[^ ]+$")){ split($i,a,":"); print a[2] } } }' | paste -sd, -)"
-      if [ -z "$actual_csv" ]; then
-        echo "  - $sw : MISSING"
-      else
-        miss="$(csv_diff "$desired_csv" "$actual_csv")"
-        extra="$(csv_diff "$actual_csv" "$desired_csv")"
-        if [ -n "$miss" ] || [ -n "$extra" ]; then
-          echo "  - $sw : DRIFT (missing: ${miss:-none}, extra: ${extra:-none})"
-        else
-          echo "  - $sw : OK"
-        fi
-      fi
-    done
-  else
-    echo "  (valectl/vale-ctl indisponible ou ne supporte pas -l)"
+  detect_vale_ctl
+  cfg_vale="$(parse_networks_yaml_vale || true)"
+  pairs="$(vale_runtime_pairs || true)"
+
+  if [ -z "$cfg_vale" ]; then
+    echo "  (aucun réseau VALE configuré dans $NETWORKS_YAML)"
+    if [ -n "$pairs" ]; then
+      # montrer ce que le runtime voit pour aider au debug
+      echo "  découvert (runtime):"
+      printf "%s\n" "$pairs" | awk '{print "   • "$1" -> "$2}'
+    fi
+    return 0
   fi
 
-  # Netgraph
-  echo " Netgraph:"
-  if have ngctl; then
-    # désiré
-    parse_networks_yaml_netgraph | while IFS='|' read -r br ports; do
-      desired_csv="$(echo "$ports" | tr -d '[:space:]')"
-      # actuel
-      actual_csv="$(netgraph_runtime_dump 2>/dev/null | awk -v b="$br" '$1==b{print $3}' | awk 'NF' | sort -u | paste -sd, -)"
-      if [ -z "$actual_csv" ]; then
-        echo "  - $br : MISSING"
+  printf "%s\n" "$cfg_vale" | while IFS='|' read -r sw ports; do
+    desired_csv="$(printf "%s" "$ports" | tr -d '[:space:]')"
+    present_csv="$(printf "%s\n" "$pairs" | awk -v s="$sw" '$1==s{print $2}' | paste -sd, - || true)"
+    if [ -z "${present_csv:-}" ]; then
+      echo "  - $sw : MISSING"
+    else
+      miss="$(csv_diff "$desired_csv" "$present_csv")"
+      extra="$(csv_diff "$present_csv" "$desired_csv")"
+      if [ -n "$miss" ] || [ -n "$extra" ]; then
+        echo "  - $sw : DRIFT (missing: ${miss:-none}, extra: ${extra:-none})"
       else
-        miss="$(csv_diff "$desired_csv" "$actual_csv")"
-        extra="$(csv_diff "$actual_csv" "$desired_csv")"
-        if [ -n "$miss" ] || [ -n "$extra" ]; then
-          echo "  - $br : DRIFT (missing: ${miss:-none}, extra: ${extra:-none})"
-        else
-          echo "  - $br : OK"
-        fi
+        echo "  - $sw : OK"
+      fi
+    fi
+  done
+}
+
+ensure_netgraph(){
+  echo " Netgraph:"
+  cfg_ng="$(parse_networks_yaml_netgraph || true)"
+  if [ -z "$cfg_ng" ]; then
+    echo "  (aucun réseau Netgraph configuré dans $NETWORKS_YAML)"
+    return 0
+  fi
+  printf "%s\n" "$cfg_ng" | while IFS='|' read -r br ifs; do
+    desired_csv="$(printf "%s" "$ifs" | tr -d '[:space:]')"
+    if ! ng_bridge_exists "$br"; then
+      echo "  - $br : MISSING"
+      continue
+    fi
+    present_csv="$(ng_scan_links "$br" | awk '{print $2}' | sed '/^$/d' | paste -sd, - || true)"
+    miss="$(csv_diff "$desired_csv" "${present_csv:-}")"
+    extra="$(csv_diff "${present_csv:-}" "$desired_csv")"
+    if [ -n "$miss" ] || [ -n "$extra" ]; then
+      echo "  - $br : DRIFT (missing: ${miss:-none}, extra: ${extra:-none})"
+    else
+      echo "  - $br : OK"
+    fi
+  done
+}
+
+ensure(){
+  echo "g-guest_segments: ensure (lecture seule)"
+  echo "Segments status (read-only):"
+  ensure_vale
+  ensure_netgraph
+}
+
+# ------------- PLAN (texte & JSON) -------------
+plan_text(){
+  echo "PLAN:"
+  echo " VALE:"
+  cfg_vale="$(parse_networks_yaml_vale || true)"
+  pairs="$(vale_runtime_pairs || true)"
+  if [ -z "$cfg_vale" ]; then
+    echo "  (aucun réseau VALE configuré)"
+  else
+    printf "%s\n" "$cfg_vale" | while IFS='|' read -r sw ports; do
+      desired="$(printf "%s" "$ports" | tr -d '[:space:]')"
+      present="$(printf "%s\n" "$pairs" | awk -v s="$sw" '$1==s{print $2}' | paste -sd, - || true)"
+      miss="$(csv_diff "$desired" "${present:-}")"
+      extra="$(csv_diff "${present:-}" "$desired")"
+      state="OK"
+      [ -z "${present:-}" ] && state="MISSING"
+      [ -n "$miss" ] || [ -n "$extra" ] && [ "$state" = "OK" ] && state="DRIFT"
+      echo "  - $sw"
+      echo "    desired: ${desired:-<none>}"
+      echo "    present: ${present:-<none>}"
+      echo "    missing: ${miss:-<none>}"
+      echo "    extra:   ${extra:-<none>}"
+      echo "    state:   $state"
+    done
+  fi
+
+  echo " Netgraph:"
+  cfg_ng="$(parse_networks_yaml_netgraph || true)"
+  if [ -z "$cfg_ng" ]; then
+    echo "  (aucun réseau Netgraph configuré)"
+  else
+    printf "%s\n" "$cfg_ng" | while IFS='|' read -r br ifs; do
+      desired="$(printf "%s" "$ifs" | tr -d '[:space:]')"
+      links="$(ng_scan_links "$br" || true)"
+      present="$(printf "%s\n" "$links" | awk '{print $2}' | sed '/^$/d' | paste -sd, - || true)"
+      miss="$(csv_diff "$desired" "${present:-}")"
+      extra="$(csv_diff "${present:-}" "$desired")"
+      state="OK"
+      if ! ng_bridge_exists "$br"; then
+        state="MISSING"
+      else
+        [ -n "$miss" ] || [ -n "$extra" ] && state="DRIFT"
+      fi
+      echo "  - $br"
+      echo "    desired: ${desired:-<none>}"
+      echo "    present: ${present:-<none>}"
+      echo "    missing: ${miss:-<none>}"
+      echo "    extra:   ${extra:-<none>}"
+      echo "    state:   $state"
+      if [ -n "${links:-}" ]; then
+        echo "    links:"
+        printf "%s\n" "$links" | while read -r hk ifn; do
+          echo "      - ${hk}: ${ifn:-<unknown>}"
+        done
       fi
     done
-  else
-    echo "  (ngctl indisponible)"
   fi
 }
 
-# ---------- CLI ----------
+plan_json(){
+  printf "{"
+  printf "\"version\":1,"
+
+  printf "\"vale\":["
+  firstv=1
+  cfg_vale="$(parse_networks_yaml_vale || true)"
+  pairs="$(vale_runtime_pairs || true)"
+  if [ -n "$cfg_vale" ]; then
+    printf "%s\n" "$cfg_vale" | while IFS='|' read -r sw ports; do
+      desired="$(printf "%s" "$ports" | tr -d '[:space:]')"
+      present="$(printf "%s\n" "$pairs" | awk -v s="$sw" '$1==s{print $2}' | paste -sd, - || true)"
+      miss="$(csv_diff "$desired" "${present:-}")"
+      extra="$(csv_diff "${present:-}" "$desired")"
+      state="OK"
+      [ -z "${present:-}" ] && state="MISSING"
+      [ -n "$miss" ] || [ -n "$extra" ] && [ "$state" = "OK" ] && state="DRIFT"
+      [ $firstv -eq 1 ] && firstv=0 || printf ","
+      printf "{"
+      printf "\"switch\":\"%s\"," "$(json_escape "$sw")"
+      printf "\"desired_ports\":%s," "$(json_array_from_csv "$desired")"
+      printf "\"present_ports\":%s," "$(json_array_from_csv "${present:-}")"
+      printf "\"missing_ports\":%s," "$(json_array_from_csv "${miss:-}")"
+      printf "\"extra_ports\":%s,"   "$(json_array_from_csv "${extra:-}")"
+      printf "\"state\":\"%s\"" "$state"
+      printf "}"
+    done
+  fi
+  printf "],"
+
+  printf "\"netgraph\":["
+  firstn=1
+  cfg_ng="$(parse_networks_yaml_netgraph || true)"
+  if [ -n "$cfg_ng" ]; then
+    printf "%s\n" "$cfg_ng" | while IFS='|' read -r br ifs; do
+      desired="$(printf "%s" "$ifs" | tr -d '[:space:]')"
+      links="$(ng_scan_links "$br" || true)"
+      present="$(printf "%s\n" "$links" | awk '{print $2}' | sed '/^$/d' | paste -sd, - || true)"
+      miss="$(csv_diff "$desired" "${present:-}")"
+      extra="$(csv_diff "${present:-}" "$desired")"
+      state="OK"
+      if ! ng_bridge_exists "$br"; then
+        state="MISSING"
+      else
+        [ -n "$miss" ] || [ -n "$extra" ] && state="DRIFT"
+      fi
+      [ $firstn -eq 1 ] && firstn=0 || printf ","
+      printf "{"
+      printf "\"bridge\":\"%s\"," "$(json_escape "$br")"
+      printf "\"desired_if\":%s,"  "$(json_array_from_csv "$desired")"
+      printf "\"present_if\":%s,"  "$(json_array_from_csv "${present:-}")"
+      printf "\"missing_if\":%s,"  "$(json_array_from_csv "${miss:-}")"
+      printf "\"extra_if\":%s,"    "$(json_array_from_csv "${extra:-}")"
+      printf "\"links\":["
+      firstl=1
+      if [ -n "${links:-}" ]; then
+        printf "%s\n" "$links" | while read -r hk ifn; do
+          [ $firstl -eq 1 ] && firstl=0 || printf ","
+          printf "{"
+          printf "\"hook\":\"%s\"," "$(json_escape "$hk")"
+          printf "\"if\":\"%s\""     "$(json_escape "${ifn:-}")"
+          printf "}"
+        done
+      fi
+      printf "],"
+      printf "\"state\":\"%s\"" "$state"
+      printf "}"
+    done
+  fi
+  printf "]"
+
+  printf "}\n"
+}
+
+plan(){
+  if [ "${1:-}" = "--json" ]; then
+    plan_json
+  else
+    plan_text
+  fi
+}
+
 cmd="${1:-}"; shift || true
 case "$cmd" in
   ensure) ensure ;;
-  plan)
-    if [ "${1:-}" = "--json" ]; then plan_json; else plan_text; fi
-    ;;
-  *)
-    cat >&2 <<USAGE
-Usage: $0 {ensure|plan [--json]}
-  ensure       : vérifie l'état (VALE & Netgraph, lecture seule)
-  plan         : plan de cohérence (texte)
-  plan --json  : plan de cohérence (JSON), inclut:
-                 - vale: desired/actual/present/missing/extra per switch
-                 - netgraph: desired/actual/present/missing/extra + links (hook->if) per bridge
-USAGE
-    exit 1
-    ;;
+  plan)   plan "${1:-}" ;;
+  *) echo "Usage: $0 {ensure|plan [--json]}" >&2; exit 1 ;;
 esac

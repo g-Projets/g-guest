@@ -1,67 +1,66 @@
 #!/bin/sh
-# PROVIDE: g-guest_segments
-# REQUIRE: FILESYSTEMS
-# KEYWORD: shutdown
-
-# g-guest segments: vérifie et affiche l'état des segments (VALE/Netgraph)
-# Ce service n'est pas un démon ; il exécute une action one-shot au boot.
 #
-# rc.conf :
-#   g_guest_segments_enable="YES"
-#   g_guest_base="/usr/local/g-guest"            # optionnel (défaut)
-#   g_guest_segments_args="--json"               # optionnel
+# PROVIDE: g-guest_segments
+# REQUIRE: LOGIN
+# KEYWORD: shutdown
 
 . /etc/rc.subr
 
-name="g-guest_segments"
+# IMPORTANT: pas de '-' dans 'name'
+name="g_guest_segments"
 rcvar="g_guest_segments_enable"
 
 : ${g_guest_segments_enable:="NO"}
-: ${g_guest_base:="/usr/local/g-guest"}
+: ${g_guest_segments_base:="/usr/local/g-guest"}
+: ${g_guest_segments_cmd:="${g_guest_segments_base}/bin/segments.sh"}
 
-load_rc_config $name
+start_cmd="g_guest_segments_start"
+stop_cmd="g_guest_segments_stop"
+status_cmd="g_guest_segments_status"
+extra_commands="plan"
+plan_cmd="g_guest_segments_plan"
 
-SEG_BIN="${g_guest_base}/bin/segments.sh"
-: ${g_guest_segments_args:=""}
-
-required_files="${SEG_BIN}"
-
-start_cmd="${name}_start"
-status_cmd="${name}_status"
-restart_cmd="${name}_restart"
-extra_commands="reload onestart onestatus"
-reload_cmd="${name}_reload"
-
-${name}_start()
+g_guest_segments_start()
 {
-    echo "g-guest segments: ensure (lecture seule)…"
-    "${SEG_BIN}" ensure ${g_guest_segments_args}
-}
-
-${name}_reload()
-{
-    # même action que start (lecture seule)
-    ${name}_start
-}
-
-${name}_restart()
-{
-    # lecture seule: restart = reload
-    ${name}_reload
-}
-
-${name}_status()
-{
-    # Affiche un résumé d'état ; si --json dans args on le laisse tel quel.
-    if echo "${g_guest_segments_args}" | grep -q -- "--json"; then
-        echo "g-guest segments status (JSON):"
-        "${SEG_BIN}" ensure ${g_guest_segments_args}
-        return
+    if [ ! -x "${g_guest_segments_cmd}" ]; then
+        echo "g-guest_segments: ${g_guest_segments_cmd} introuvable ou non exécutable" >&2
+        return 1
     fi
-
-    echo "g-guest segments status:"
-    "${SEG_BIN}" ensure | sed 's/^/  /'
-    echo "note: service non daemonisé (pas de PID)."
+    echo "g-guest_segments: ensure (lecture seule)"
+    BASE_DIR="${g_guest_segments_base}" \
+    CFG_DIR="${g_guest_segments_base}/config" \
+    "${g_guest_segments_cmd}" ensure
 }
 
+g_guest_segments_stop()
+{
+    echo "g-guest_segments: rien à arrêter (one-shot)."
+    return 0
+}
+
+g_guest_segments_status()
+{
+    if [ ! -x "${g_guest_segments_cmd}" ]; then
+        echo "g-guest_segments: ${g_guest_segments_cmd} introuvable ou non exécutable" >&2
+        return 1
+    fi
+    echo "g-guest_segments: état (ensure, lecture seule)"
+    BASE_DIR="${g_guest_segments_base}" \
+    CFG_DIR="${g_guest_segments_base}/config" \
+    "${g_guest_segments_cmd}" ensure
+}
+
+g_guest_segments_plan()
+{
+    if [ ! -x "${g_guest_segments_cmd}" ]; then
+        echo "g-guest_segments: ${g_guest_segments_cmd} introuvable ou non exécutable" >&2
+        return 1
+    fi
+    echo "g-guest_segments: plan (texte)"
+    BASE_DIR="${g_guest_segments_base}" \
+    CFG_DIR="${g_guest_segments_base}/config" \
+    "${g_guest_segments_cmd}" plan
+}
+
+load_rc_config "$name"
 run_rc_command "$1"
